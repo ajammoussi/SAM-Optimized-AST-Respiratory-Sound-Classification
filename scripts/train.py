@@ -40,6 +40,7 @@ import os
 import argparse
 import multiprocessing as mp
 import sys
+import contextlib
 from pathlib import Path
 import numpy as np
 import torch
@@ -59,6 +60,33 @@ if str(REPO_ROOT) not in sys.path:
 from src.dataset import ASTDataset
 from src.model import CustomAST
 from src.look_sam import LookSAM
+
+
+def _autocast_ctx(enabled: bool, dtype: torch.dtype):
+    if not enabled:
+        return contextlib.nullcontext()
+    return torch.amp.autocast("cuda", enabled=True, dtype=dtype)
+
+
+def _all_grads_finite(params) -> bool:
+    for p in params:
+        if p.grad is None:
+            continue
+        if not torch.isfinite(p.grad).all():
+            return False
+    return True
+
+
+def _tensor_stats(x: torch.Tensor) -> str:
+    finite = torch.isfinite(x)
+    if not finite.any():
+        return f"shape={tuple(x.shape)} dtype={x.dtype} (no finite values)"
+    x_f = x[finite]
+    return (
+        f"shape={tuple(x.shape)} dtype={x.dtype} "
+        f"min={x_f.min().item():.4g} max={x_f.max().item():.4g} "
+        f"mean={x_f.mean().item():.4g} std={x_f.std(unbiased=False).item():.4g}"
+    )
 
 
 # ======================================================================
@@ -229,8 +257,14 @@ def load_checkpoint(path: str, model: nn.Module, optimizer: LookSAM, scaler: Gra
 # Evaluation pass
 # ======================================================================
 
-def evaluate_model(model: nn.Module, loader: DataLoader, criterion: nn.Module,
-                   device: torch.device, use_amp: bool):
+def evaluate_model(
+    model: nn.Module,
+    loader: DataLoader,
+    criterion: nn.Module,
+    device: torch.device,
+    autocast_enabled: bool,
+    autocast_dtype: torch.dtype,
+):
     """Run the model on loader, return (avg_loss, se, sp, score, cm)."""
     model.eval()
     total_loss = 0.0
@@ -241,13 +275,9 @@ def evaluate_model(model: nn.Module, loader: DataLoader, criterion: nn.Module,
             inputs = inputs.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            if use_amp:
-                with torch.amp.autocast("cuda"):
-                    logits = model(inputs)
-                    loss   = criterion(logits, labels)
-            else:
+            with _autocast_ctx(autocast_enabled, autocast_dtype):
                 logits = model(inputs)
-                loss   = criterion(logits, labels)
+                loss = criterion(logits, labels)
 
             total_loss += loss.item()
             preds = torch.argmax(logits, dim=1)
@@ -277,9 +307,23 @@ def train(args):
     # ------------------------------------------------------------------ #
     # Setup
     # ------------------------------------------------------------------ #
-    use_amp = torch.cuda.is_available()
-    device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device : {device}  |  AMP : {use_amp}")
+    has_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if has_cuda else "cpu")
+
+    amp_mode = args.amp_dtype.lower()
+    autocast_enabled = bool(has_cuda and amp_mode != "off")
+    if amp_mode == "bf16":
+        autocast_dtype = torch.bfloat16
+    elif amp_mode in ("fp16", "off"):
+        autocast_dtype = torch.float16
+    else:
+        raise ValueError(f"Unknown --amp_dtype '{args.amp_dtype}' (use: fp16, bf16, off)")
+
+    # GradScaler is only required for fp16 autocast.
+    scaler_enabled = bool(autocast_enabled and autocast_dtype == torch.float16)
+    print(
+        f"Device : {device}  |  autocast : {autocast_enabled} ({amp_mode})  |  GradScaler : {scaler_enabled}"
+    )
 
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.results_dir,    exist_ok=True)
@@ -303,9 +347,15 @@ def train(args):
     print(f"   Train: {X_train.shape}   Test: {X_test.shape}")
 
     # Weighted sampler to counteract class imbalance
-    counts  = np.bincount(y_train)
-    weights = [1.0 / counts[y] for y in y_train]
-    sampler = WeightedRandomSampler(weights, len(y_train), replacement=True)
+    y_train_np = y_train.cpu().numpy() if isinstance(y_train, torch.Tensor) else np.asarray(y_train)
+    counts = np.bincount(y_train_np, minlength=4)
+    class_weights = 1.0 / np.maximum(counts, 1)
+    sample_weights = class_weights[y_train_np]
+    sampler = WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=len(y_train_np),
+        replacement=True,
+    )
 
     loader_kwargs = dict(
         batch_size=args.batch_size,
@@ -348,7 +398,7 @@ def train(args):
         weight_decay=1e-4,
     )
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    scaler    = GradScaler("cuda", enabled=use_amp)
+    scaler = GradScaler("cuda", enabled=scaler_enabled)
 
     # Cosine annealing with warm restarts (improves convergence vs flat LR)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -393,6 +443,8 @@ def train(args):
         running_loss = 0.0
         n_batches    = 0
 
+        nonfinite_batches = 0
+
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{args.epochs}", leave=True)
 
         for inputs, labels, _ in pbar:
@@ -413,36 +465,64 @@ def train(args):
             # ================================================================
 
             # ---- Pass 1: gradient at current weights w ----
-            optimizer.zero_grad()
-            with torch.amp.autocast("cuda", enabled=use_amp):
+            optimizer.zero_grad(set_to_none=True)
+            with _autocast_ctx(autocast_enabled, autocast_dtype):
                 logits = model(inputs)
-                loss   = criterion(logits, labels)
+                loss = criterion(logits, labels)
 
-            scaler.scale(loss).backward()
-            
-            # For SAM, we need the actual gradient values for first_step
-            # We temporarily unscale, get the gradients, then rescale implicitly
-            if use_amp:
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "Non-finite loss detected. "
+                    f"inputs: {_tensor_stats(inputs)} | logits: {_tensor_stats(logits)}"
+                )
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
                 scaler.unscale_(optimizer.base_optimizer)
-            
+            else:
+                loss.backward()
+
+            # If gradients overflowed/are NaN, do NOT call SAM first_step.
+            if not _all_grads_finite(model.parameters()):
+                nonfinite_batches += 1
+                optimizer.zero_grad(set_to_none=True)
+                if scaler.is_enabled():
+                    scaler.update()
+                pbar.set_postfix({"loss": "nonfinite_grad(skip)"})
+                if nonfinite_batches >= args.max_nonfinite_batches and autocast_enabled:
+                    print(
+                        f"\n[WARN] {nonfinite_batches} non-finite batches this epoch. "
+                        "Consider '--amp_dtype bf16' or '--amp_dtype off'."
+                    )
+                continue
+
             optimizer.first_step(zero_grad=False)       # perturbs w to w + epsilon; keeps grads
 
             # ---- Pass 2: gradient at perturbed weights w + ε̂ ----
-            optimizer.zero_grad()
-            with torch.amp.autocast("cuda", enabled=use_amp):
-                loss2 = criterion(model(inputs), labels)
+            optimizer.zero_grad(set_to_none=True)
+            with _autocast_ctx(autocast_enabled, autocast_dtype):
+                logits2 = model(inputs)
+                loss2 = criterion(logits2, labels)
 
-            scaler.scale(loss2).backward()
-            
-            # GradScaler handles inf/nan detection on the real optimizer step.
-            # We only unscale once per iteration (before first_step) so SAM can
-            # use true gradients for the perturbation without tripping AMP state.
-            if use_amp:
+            if not torch.isfinite(loss2):
+                optimizer.second_step(scaler=None, zero_grad=True, skip_update=True)
+                nonfinite_batches += 1
+                pbar.set_postfix({"loss": "nonfinite_loss2(skip)"})
+                continue
+
+            if scaler.is_enabled():
+                scaler.scale(loss2).backward()
                 optimizer.second_step(scaler=scaler, zero_grad=True)
+                scaler.update()
             else:
+                loss2.backward()
+                if not _all_grads_finite(model.parameters()):
+                    optimizer.second_step(scaler=None, zero_grad=True, skip_update=True)
+                    nonfinite_batches += 1
+                    pbar.set_postfix({"loss": "nonfinite_grad2(skip)"})
+                    continue
                 optimizer.second_step(scaler=None, zero_grad=True)
 
-            scaler.update()
             scheduler.step()
 
             running_loss += loss.item()
@@ -452,7 +532,12 @@ def train(args):
         # ---- Validation ----
         avg_train_loss = running_loss / n_batches
         avg_val_loss, se, sp, score, cm = evaluate_model(
-            model, val_loader, criterion, device, use_amp
+            model,
+            val_loader,
+            criterion,
+            device,
+            autocast_enabled=autocast_enabled,
+            autocast_dtype=autocast_dtype,
         )
 
         current_lr = optimizer.base_optimizer.param_groups[0]["lr"]
@@ -526,6 +611,19 @@ if __name__ == "__main__":
                         help="Enable torch.compile() (PyTorch >= 2.0)")
     parser.add_argument("--resume",        action="store_true",
                         help="Resume from latest_checkpoint.pt if it exists")
+    parser.add_argument(
+        "--amp_dtype",
+        type=str,
+        default="fp16",
+        choices=["fp16", "bf16", "off"],
+        help="Autocast dtype on CUDA: fp16 (fast), bf16 (more stable), off (fp32)",
+    )
+    parser.add_argument(
+        "--max_nonfinite_batches",
+        type=int,
+        default=10,
+        help="Warn after this many non-finite batches in an epoch.",
+    )
 
     args = parser.parse_args()
     train(args)

@@ -102,10 +102,17 @@ class LookSAM(torch.optim.Optimizer):
         Cache the SAM orthogonal direction v = g_sam - g_sgd (projected component).
         We approximate: v ≈ (ρ / ‖g‖) * g  (the perturbation itself).
         """
+        # If gradients are non-finite (can happen with AMP overflow), do not
+        # update the cache; otherwise we can inject NaNs into parameters.
+        if not torch.isfinite(grad_norm):
+            return
         for group in self.param_groups:
             scale = group["rho"] / (grad_norm + 1e-12)
             for p in group["params"]:
                 if p.grad is None:
+                    continue
+                # Skip non-finite grads to avoid inf*0 -> NaN corruption.
+                if not torch.isfinite(p.grad).all():
                     continue
                 e_w = (
                     (torch.pow(p, 2) if group["adaptive"] else 1.0)
@@ -132,6 +139,11 @@ class LookSAM(torch.optim.Optimizer):
         pass sees the perturbed parameter.
         """
         grad_norm = self._grad_norm()
+        if not torch.isfinite(grad_norm):
+            # Non-finite grads: don't perturb weights (prevents NaN cascade).
+            if zero_grad:
+                self.zero_grad()
+            return
         do_sam = (self._step_count % self.param_groups[0]["k"] == 0)
 
         if do_sam or not self._v_cache:
