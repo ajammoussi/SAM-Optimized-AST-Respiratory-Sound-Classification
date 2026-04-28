@@ -24,13 +24,13 @@ Key improvements over the original paper code
 Usage (local / Colab)
 ---------------------
   # First run (or after Colab disconnect):
-  python train.py \\
+  python scripts/train.py \\
       --data_path ./icbhi_ast_16k_8s_spectrograms.npz \\
       --checkpoint_dir ./checkpoints \\
       --epochs 20 --batch_size 16 --lr 1e-5
 
   # Resume after disconnect (auto-detected from latest_checkpoint.pt):
-  python train.py \\
+  python scripts/train.py \\
       --data_path ./icbhi_ast_16k_8s_spectrograms.npz \\
       --checkpoint_dir ./checkpoints \\
       --epochs 20 --batch_size 16 --lr 1e-5 --resume
@@ -39,6 +39,8 @@ Usage (local / Colab)
 import os
 import argparse
 import multiprocessing as mp
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -49,6 +51,10 @@ from tqdm import tqdm
 import matplotlib
 matplotlib.use("Agg")          # non-interactive backend — safe in scripts & Colab
 import matplotlib.pyplot as plt
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from src.dataset import ASTDataset
 from src.model import CustomAST
@@ -284,7 +290,7 @@ def train(args):
     print(f"\nLoading data from: {args.data_path}")
     if not os.path.exists(args.data_path):
         raise FileNotFoundError(
-            f"{args.data_path} not found.  Run preprocess.py first."
+            f"{args.data_path} not found.  Run scripts/preprocess.py first."
         )
 
     data = np.load(args.data_path)
@@ -325,7 +331,7 @@ def train(args):
     print("\nBuilding model …")
     model = CustomAST(num_classes=4).to(device)
 
-    # Optional: torch.compile for extra kernel fusion (PyTorch ≥ 2.0)
+    # Optional: torch.compile for extra kernel fusion (PyTorch >= 2.0)
     if args.compile and hasattr(torch, "compile"):
         print("   torch.compile() enabled …")
         model = torch.compile(model, mode="reduce-overhead")

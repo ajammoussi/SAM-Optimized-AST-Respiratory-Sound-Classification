@@ -49,8 +49,8 @@ class LookSAM(torch.optim.Optimizer):
         Neighbourhood radius for the SAM perturbation (default 0.05).
     k : int
         How often to recompute the full SAM ascent step.
-        k=1  →  equivalent to vanilla SAM (2× cost every step).
-        k=5  →  SAM ascent only every 5 steps (~1.2× cost overall).
+        k=1  to  equivalent to vanilla SAM (2x cost every step).
+        k=5  to  SAM ascent only every 5 steps (~1.2x cost overall).
     adaptive : bool
         If True use element-wise scaling (ASAM).  Default False.
     **kwargs

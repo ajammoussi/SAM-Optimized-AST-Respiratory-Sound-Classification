@@ -20,19 +20,28 @@ Output .npz keys:
   device_test  : int64, (N_test,)
 
 Usage:
-  python preprocess.py \
-      --data_dir  ./data/ICBHI_final_database \
-      --split_file ./data/ICBHI_challenge_train_test.txt \
-      --output    ./icbhi_ast_16k_8s_spectrograms.npz
+    python scripts/preprocess.py \
+            --data_dir  ./data/ICBHI_final_database \
+            --split_file ./data/ICBHI_challenge_train_test.txt \
+            --output    ./icbhi_ast_16k_8s_spectrograms.npz
 """
 
 import os
+import sys
 import argparse
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import librosa
 from tqdm import tqdm
 from transformers import ASTFeatureExtractor
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Import the dataset downloader
+from scripts.download_data import download_data
 
 # --------------------------------------------------------------------- #
 # Constants
@@ -81,6 +90,17 @@ def process_data(args):
     print("=" * 60)
     print("ICBHI 2017 Preprocessing — Pre-computing AST Spectrograms")
     print("=" * 60)
+
+    # ---- Ensure dataset is downloaded ----
+    print("\n Checking dataset...")
+    # Extract parent directory (in case args.data_dir points to ICBHI_final_database)
+    data_dir = args.data_dir
+    if data_dir.endswith("ICBHI_final_database"):
+        data_dir = os.path.dirname(data_dir)
+    
+    if not download_data(data_dir):
+        print("[ERROR] Failed to download/verify dataset. Aborting.")
+        sys.exit(1)
 
     # Load the feature extractor once (downloads ~few MB from HuggingFace)
     print("\nLoading ASTFeatureExtractor …")
@@ -138,7 +158,7 @@ def process_data(args):
                 sampling_rate=TARGET_SR,
                 return_tensors="np",
             )
-            # Squeeze the batch dimension → (freq_bins, time_frames)
+            # Squeeze the batch dimension to (freq_bins, time_frames)
             spectrogram = feat["input_values"].squeeze(0).astype(np.float32)
 
             # Class label
@@ -189,20 +209,31 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_dir",
         type=str,
-        default="./data/ICBHI_final_database",
-        help="Folder containing .wav and .txt annotation files",
+        default="./data",
+        help="Parent data directory containing ICBHI_final_database/ and split file",
     )
     parser.add_argument(
         "--split_file",
         type=str,
-        default="./data/ICBHI_challenge_train_test.txt",
-        help="Official train/test split file",
+        default=None,
+        help="Official train/test split file (auto-detected if not provided)",
     )
     parser.add_argument(
         "--output",
         type=str,
-        default="./icbhi_ast_16k_8s_spectrograms.npz",
+        default="./data/icbhi_ast_16k_8s_spectrograms.npz",
         help="Output .npz file path",
     )
     args = parser.parse_args()
+    
+    # Auto-detect split file if not provided
+    if args.split_file is None:
+        args.split_file = os.path.join(args.data_dir, "ICBHI_challenge_train_test.txt")
+    
+    # Construct the full data directory path
+    db_dir = os.path.join(args.data_dir, "ICBHI_final_database")
+    if not os.path.isdir(db_dir):
+        db_dir = args.data_dir  # fallback: assume it's the database dir itself
+    
+    args.data_dir = db_dir
     process_data(args)

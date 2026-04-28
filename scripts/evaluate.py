@@ -12,16 +12,18 @@ Comprehensive evaluation of a trained ICBHI AST model, producing:
 All figures are saved to --output_dir (default ./results).
 
 Usage:
-  python evaluate.py \\
-      --data_path  ./icbhi_ast_16k_8s_spectrograms.npz \\
-      --model_path ./checkpoints/best_model.pth \\
-      --output_dir ./results
+    python scripts/evaluate.py \\
+            --data_path  ./icbhi_ast_16k_8s_spectrograms.npz \\
+            --model_path ./checkpoints/best_model.pth \\
+            --output_dir ./results
 """
 
 import os
 import argparse
 import gc
 import multiprocessing as mp
+import sys
+from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
@@ -37,6 +39,10 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
 )
 from sklearn.manifold import TSNE
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from src.dataset import ASTDataset
 from src.model import CustomAST

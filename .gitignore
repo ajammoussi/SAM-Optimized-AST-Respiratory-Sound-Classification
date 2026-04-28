@@ -20,6 +20,7 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+__init__.py
 
 # PyTorch
 *.pth

@@ -6,7 +6,7 @@ Audio Spectrogram Transformer fine-tuned for 4-class ICBHI classification.
 Architecture is identical to the paper:
   • AST backbone pre-trained on AudioSet (MIT/ast-finetuned-audioset-10-10-0.4593)
   • Mean-pooling over the sequence dimension (more stable than CLS token alone)
-  • Classifier head: Dropout(0.3) → Linear(768 → num_classes)
+   • Classifier head: Dropout(0.3) to Linear(768 to num_classes)
 """
 
 import torch.nn as nn
