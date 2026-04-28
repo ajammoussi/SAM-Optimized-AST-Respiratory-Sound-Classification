@@ -523,7 +523,7 @@ if __name__ == "__main__":
     parser.add_argument("--scheduler_t0", type=int,   default=5,
                         help="CosineAnnealingWarmRestarts T_0")
     parser.add_argument("--compile",       action="store_true",
-                        help="Enable torch.compile() (PyTorch ≥ 2.0)")
+                        help="Enable torch.compile() (PyTorch >= 2.0)")
     parser.add_argument("--resume",        action="store_true",
                         help="Resume from latest_checkpoint.pt if it exists")
 
