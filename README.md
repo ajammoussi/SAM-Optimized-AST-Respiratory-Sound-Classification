@@ -116,10 +116,10 @@ Takes ~5–10 min but eliminates the biggest training bottleneck.
 
 ```bash
 # First run
-python scripts/train.py --epochs 20 --batch_size 16 --lr 1e-5
+python scripts/train.py
 
 # Resume after interruption (Colab disconnect, etc.)
-python scripts/train.py --epochs 20 --batch_size 16 --lr 1e-5 --resume
+python scripts/train.py
 ```
 
 Training plots (`results/training_curves.png`) are updated after every epoch.

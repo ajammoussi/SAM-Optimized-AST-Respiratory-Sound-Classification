@@ -597,13 +597,13 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_dir",type=str,   default="./checkpoints")
     parser.add_argument("--results_dir",   type=str,   default="./results")
     parser.add_argument("--epochs",        type=int,   default=20)
-    parser.add_argument("--batch_size",    type=int,   default=16)
+    parser.add_argument("--batch_size",    type=int,   default=4)
     parser.add_argument("--lr",            type=float, default=1e-5)
     parser.add_argument("--rho",           type=float, default=0.05,
                         help="SAM neighbourhood radius")
     parser.add_argument("--looksam_k",     type=int,   default=5,
                         help="LookSAM update frequency (k=1 to vanilla SAM)")
-    parser.add_argument("--num_workers",   type=int,   default=4,
+    parser.add_argument("--num_workers",   type=int,   default=0,
                         help="DataLoader worker processes")
     parser.add_argument("--scheduler_t0", type=int,   default=5,
                         help="CosineAnnealingWarmRestarts T_0")
@@ -614,8 +614,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--amp_dtype",
         type=str,
-        default="fp16",
-        choices=["fp16", "bf16", "off"],
+        default="bf16",
+        choices=["bf16", "fp16", "off"],
         help="Autocast dtype on CUDA: fp16 (fast), bf16 (more stable), off (fp32)",
     )
     parser.add_argument(
