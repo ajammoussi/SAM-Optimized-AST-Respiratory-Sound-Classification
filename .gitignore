@@ -1,0 +1,83 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data (Exclude large dataset files but keep structure)
+data/**/**.txt
+data/**/**.wav
+data/**/**.sh
+
+# Models & Outputs
+outputs/checkpoints/**/*.pth
+outputs/onnx/**/*.onnx
+outputs/logs/**/*.json
+outputs/logs/**/*.npz
+outputs/logs/**/*.log
+weights/**/*.pth
+weights/**/*.pt
+
+# Keep structure
+!outputs/checkpoints/.gitkeep
+!outputs/logs/.gitkeep
+!outputs/onnx/.gitkeep
+!weights/.gitkeep
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ignore specific large files
+icbhi_ast_16k_8s_spectrograms.npz
