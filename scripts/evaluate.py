@@ -313,7 +313,11 @@ def evaluate(args):
     print(f" Loading model: {args.model_path}")
     model = CustomAST(num_classes=4).to(device)
 
-    ckpt = torch.load(args.model_path, map_location="cpu")
+    # Use weights_only=False to support numpy scalars (required for PyTorch 2.6+)
+    try:
+        ckpt = torch.load(args.model_path, map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(args.model_path, map_location="cpu")
     # Support both a raw state_dict and a full checkpoint dict
     if "model_state_dict" in ckpt:
         model.load_state_dict(ckpt["model_state_dict"])

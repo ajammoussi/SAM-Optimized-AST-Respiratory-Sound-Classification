@@ -229,7 +229,12 @@ def load_checkpoint(path: str, model: nn.Module, optimizer: LookSAM, scaler: Gra
     best_score : float — best ICBHI Score seen so far
     history : dict — accumulated per-epoch metrics
     """
-    ckpt = torch.load(path, map_location="cpu")
+    # Use weights_only=False to support numpy scalars in history (required for PyTorch 2.6+)
+    try:
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(path, map_location="cpu")
+        
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device)
 
