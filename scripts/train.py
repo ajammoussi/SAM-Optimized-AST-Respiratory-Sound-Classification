@@ -488,28 +488,15 @@ def train(args):
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
-                # Pass 1: first_step (perturbs w to w + epsilon)
-                # For SAM+AMP, we do NOT unscale here. LookSAM's perturbation logic
-                # is scale-invariant, and unscaling here breaks GradScaler's internal 
-                # state for the second pass.
             else:
                 loss.backward()
 
-            # If gradients overflowed/are NaN, do NOT call SAM first_step.
-            if not _all_grads_finite(model.parameters()):
-                nonfinite_batches += 1
-                optimizer.zero_grad(set_to_none=True)
-                if scaler.is_enabled():
-                    scaler.update()
-                pbar.set_postfix({"loss": "nonfinite_grad(skip)"})
-                if nonfinite_batches >= args.max_nonfinite_batches and autocast_enabled:
-                    print(
-                        f"\n[WARN] {nonfinite_batches} non-finite batches this epoch. "
-                        "Consider '--amp_dtype bf16' or '--amp_dtype off'."
-                    )
-                continue
-
-            optimizer.first_step(zero_grad=False)       # perturbs w to w + epsilon; keeps grads
+            # Pass 1: first_step (perturbs w to w + epsilon)
+            # For SAM+AMP, we do NOT unscale here. LookSAM's perturbation logic
+            # is scale-invariant, and unscaling here breaks GradScaler's internal 
+            # state for the second pass. LookSAM internally handles non-finite
+            # gradients by skipping the perturbation.
+            optimizer.first_step(zero_grad=False) 
 
             # ---- Pass 2: gradient at perturbed weights w + ε̂ ----
             optimizer.zero_grad(set_to_none=True)
