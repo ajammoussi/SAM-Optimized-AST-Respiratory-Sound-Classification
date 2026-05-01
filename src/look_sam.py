@@ -61,8 +61,8 @@ class LookSAM(torch.optim.Optimizer):
         self,
         params,
         base_optimizer,
-        rho: float = 0.05,
-        k: int = 5,
+        rho: float = 0.1,
+        k: int = 2,
         adaptive: bool = False,
         **kwargs,
     ):

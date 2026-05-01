@@ -361,6 +361,7 @@ def train(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=(device.type == "cuda"),
+        prefetch_factor=2 if args.num_workers > 0 else None,
         persistent_workers=(args.num_workers > 0),
         multiprocessing_context=mp.get_context("spawn") if args.num_workers > 0 else None,
     )
@@ -397,14 +398,18 @@ def train(args):
         k=args.looksam_k,
         weight_decay=1e-4,
     )
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # Weighted CrossEntropyLoss to counteract class imbalance (replacing label smoothing)
+    y_train_np = y_train.cpu().numpy() if isinstance(y_train, torch.Tensor) else np.asarray(y_train)
+    counts = np.bincount(y_train_np, minlength=4)
+    class_weights = torch.tensor([1.0 / np.maximum(c, 1) for c in counts], dtype=torch.float32).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     scaler = GradScaler("cuda", enabled=scaler_enabled)
 
-    # Cosine annealing with warm restarts (improves convergence vs flat LR)
+    # Cosine annealing with T_0=10, T_mult=1 (prevents LR from crashing too early)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer.base_optimizer,
         T_0=args.scheduler_t0,
-        T_mult=2,
+        T_mult=1,
         eta_min=1e-7,
     )
 
@@ -478,7 +483,10 @@ def train(args):
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer.base_optimizer)
+                # Pass 1: first_step (perturbs w to w + epsilon)
+                # For SAM+AMP, we do NOT unscale here. LookSAM's perturbation logic
+                # is scale-invariant, and unscaling here breaks GradScaler's internal 
+                # state for the second pass.
             else:
                 loss.backward()
 
@@ -597,15 +605,15 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_dir",type=str,   default="./checkpoints")
     parser.add_argument("--results_dir",   type=str,   default="./results")
     parser.add_argument("--epochs",        type=int,   default=20)
-    parser.add_argument("--batch_size",    type=int,   default=4)
+    parser.add_argument("--batch_size",    type=int,   default=16)
     parser.add_argument("--lr",            type=float, default=1e-5)
-    parser.add_argument("--rho",           type=float, default=0.05,
+    parser.add_argument("--rho",           type=float, default=0.1,
                         help="SAM neighbourhood radius")
-    parser.add_argument("--looksam_k",     type=int,   default=5,
+    parser.add_argument("--looksam_k",     type=int,   default=2,
                         help="LookSAM update frequency (k=1 to vanilla SAM)")
     parser.add_argument("--num_workers",   type=int,   default=0,
                         help="DataLoader worker processes")
-    parser.add_argument("--scheduler_t0", type=int,   default=5,
+    parser.add_argument("--scheduler_t0", type=int,   default=10,
                         help="CosineAnnealingWarmRestarts T_0")
     parser.add_argument("--compile",       action="store_true",
                         help="Enable torch.compile() (PyTorch >= 2.0)")
@@ -614,7 +622,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--amp_dtype",
         type=str,
-        default="bf16",
+        default="fp16",
         choices=["bf16", "fp16", "off"],
         help="Autocast dtype on CUDA: fp16 (fast), bf16 (more stable), off (fp32)",
     )
