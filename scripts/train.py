@@ -408,11 +408,10 @@ def train(args):
     criterion = nn.CrossEntropyLoss()
     scaler = GradScaler("cuda", enabled=scaler_enabled)
 
-    # Cosine annealing with T_0=10, T_mult=1 (prevents LR from crashing too early)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    # Cosine annealing LR scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer.base_optimizer,
-        T_0=args.scheduler_t0,
-        T_mult=1,
+        T_max=args.epochs,
         eta_min=1e-7,
     )
 
@@ -611,12 +610,10 @@ if __name__ == "__main__":
                         help="LookSAM update frequency (k=1 to vanilla SAM)")
     parser.add_argument("--num_workers",   type=int,   default=0,
                         help="DataLoader worker processes")
-    parser.add_argument("--scheduler_t0", type=int,   default=10,
-                        help="CosineAnnealingWarmRestarts T_0")
-    parser.add_argument("--min_se",         type=float, default=0.55,
-                        help="Min Se required to save best model (default 0.55)")
-    parser.add_argument("--min_sp",         type=float, default=0.55,
-                        help="Min Sp required to save best model (default 0.55)")
+    parser.add_argument("--min_se",         type=float, default=0.6,
+                        help="Min Se required to save best model (default 0.6)")
+    parser.add_argument("--min_sp",         type=float, default=0.6,
+                        help="Min Sp required to save best model (default 0.6)")
     parser.add_argument("--compile",       action="store_true",
                         help="Enable torch.compile() (PyTorch >= 2.0)")
     parser.add_argument("--resume",        action="store_true",
