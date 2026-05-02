@@ -354,6 +354,7 @@ def train(args):
     # Weighted sampler to counteract class imbalance
     y_train_np = y_train.cpu().numpy() if isinstance(y_train, torch.Tensor) else np.asarray(y_train)
     counts = np.bincount(y_train_np, minlength=4)
+    print(f"   Class counts: {dict(enumerate(counts))}")
     class_weights = 1.0 / np.maximum(counts, 1)
     sample_weights = class_weights[y_train_np]
     sampler = WeightedRandomSampler(
@@ -403,11 +404,8 @@ def train(args):
         k=args.looksam_k,
         weight_decay=1e-4,
     )
-    # Weighted CrossEntropyLoss to counteract class imbalance (replacing label smoothing)
-    y_train_np = y_train.cpu().numpy() if isinstance(y_train, torch.Tensor) else np.asarray(y_train)
-    counts = np.bincount(y_train_np, minlength=4)
-    class_weights = torch.tensor([1.0 / np.maximum(c, 1) for c in counts], dtype=torch.float32).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+
+    criterion = nn.CrossEntropyLoss()
     scaler = GradScaler("cuda", enabled=scaler_enabled)
 
     # Cosine annealing with T_0=10, T_mult=1 (prevents LR from crashing too early)
@@ -438,8 +436,8 @@ def train(args):
         start_epoch, best_score, history = load_checkpoint(
             latest_ckpt, model, optimizer, scaler, device
         )
-        # Fast-forward the scheduler to the right step
-        for _ in range(start_epoch * len(train_loader)):
+        # Fast-forward the scheduler to the right step (by epochs, not batches)
+        for _ in range(start_epoch):
             scheduler.step()
         print(f"   Resumed at epoch {start_epoch + 1}  |  Best score so far: {best_score:.4f}")
 
@@ -523,11 +521,12 @@ def train(args):
                     continue
                 optimizer.second_step(scaler=None, zero_grad=True)
 
-            scheduler.step()
-
             running_loss += loss.item()
             n_batches    += 1
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+        if nonfinite_batches > 0:
+            print(f"   [WARN] {nonfinite_batches} non-finite batches skipped this epoch")
 
         # ---- Validation ----
         avg_train_loss = running_loss / n_batches
@@ -539,6 +538,8 @@ def train(args):
             autocast_enabled=autocast_enabled,
             autocast_dtype=autocast_dtype,
         )
+
+        scheduler.step()
 
         current_lr = optimizer.base_optimizer.param_groups[0]["lr"]
         history["train_loss"].append(avg_train_loss)
@@ -558,13 +559,18 @@ def train(args):
             f"LR: {current_lr:.2e}"
         )
 
-        # ---- Save best model (strict improvement on ICBHI Score) ----
-        if score > best_score:
+        # Balanced save condition — both Se and Sp must be >=55%
+        # This prevents saving a model that achieves high Score purely via Se
+        # at the cost of Sp collapsing to 19%.
+        se_ok = se >= args.min_se
+        sp_ok = sp >= args.min_sp
+        if score > best_score and se_ok and sp_ok:
             best_score = score
-            best_path  = os.path.join(args.checkpoint_dir, "best_model.pth")
-            # Save only model weights for the best model (lighter file)
-            torch.save(model.state_dict(), best_path)
-            print(f"    New best model saved -> {best_path}  (Score: {best_score*100:.2f}%)")
+            best_path = os.path.join(args.checkpoint_dir, "best_model.pth")
+            torch.save({"model_state_dict": model.state_dict()}, best_path)
+            print(f"    New best -> {best_path}  (Score: {best_score*100:.2f}%  Se: {se*100:.2f}%  Sp: {sp*100:.2f}%)")
+        elif score > best_score:
+            print(f"    Score improved to {score*100:.2f}% but Se={se*100:.1f}% or Sp={sp*100:.1f}% below floor — not saved")
 
         # ---- Save full resume checkpoint every epoch ----
         save_checkpoint(
@@ -599,7 +605,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs",        type=int,   default=20)
     parser.add_argument("--batch_size",    type=int,   default=16)
     parser.add_argument("--lr",            type=float, default=1e-5)
-    parser.add_argument("--rho",           type=float, default=0.1,
+    parser.add_argument("--rho",           type=float, default=0.05,
                         help="SAM neighbourhood radius")
     parser.add_argument("--looksam_k",     type=int,   default=2,
                         help="LookSAM update frequency (k=1 to vanilla SAM)")
@@ -607,6 +613,10 @@ if __name__ == "__main__":
                         help="DataLoader worker processes")
     parser.add_argument("--scheduler_t0", type=int,   default=10,
                         help="CosineAnnealingWarmRestarts T_0")
+    parser.add_argument("--min_se",         type=float, default=0.55,
+                        help="Min Se required to save best model (default 0.55)")
+    parser.add_argument("--min_sp",         type=float, default=0.55,
+                        help="Min Sp required to save best model (default 0.55)")
     parser.add_argument("--compile",       action="store_true",
                         help="Enable torch.compile() (PyTorch >= 2.0)")
     parser.add_argument("--resume",        action="store_true",
