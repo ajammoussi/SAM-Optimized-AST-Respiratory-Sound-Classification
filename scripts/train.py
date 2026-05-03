@@ -408,11 +408,9 @@ def train(args):
     criterion = nn.CrossEntropyLoss()
     scaler = GradScaler("cuda", enabled=scaler_enabled)
 
-    # Cosine annealing LR scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer.base_optimizer,
-        T_max=args.epochs,
-        eta_min=1e-7,
+    # Cosine annealing LR scheduler with warm restarts
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer.base_optimizer, T_0=args.scheduler_t0, T_mult=1, eta_min=1e-7,
     )
 
     # ------------------------------------------------------------------ #
