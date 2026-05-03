@@ -1,0 +1,67 @@
+# =========================================================================
+# W&B Sweep Config: ICBHI AST + LookSAM (focused grid)
+# =========================================================================
+# Modeled on DomainBed's exp/sweeps/sweep_erm_pacs.yaml.
+#
+# Total runs (method=grid):
+#   |lr|=4 × |looksam_k|=2 × |rho|=2 × |seed|=3 = 48 runs
+#
+# Wall clock estimate on 1× A100 with epochs=40, batch=16: ~45 min/run.
+# 48 runs / 8 agents ≈ 6 runs per GPU ≈ 4.5 h. Fits the 6h budget.
+#
+# Usage:
+#   1. Fill in `entity` below.
+#   2. wandb sweep exp/sweeps/icbhi_focused.yaml
+#      → prints SWEEP_ID
+#   3. SWEEP_ID=<id> bash exp/dgx/run_agents.sh
+# =========================================================================
+
+project: icbhi-ast-sam        # TODO: confirm wandb project name
+entity:                       # TODO: fill in wandb team/user
+program: scripts/train.py
+method: grid
+name: icbhi_focused_48
+
+metric:
+  name: best_score
+  goal: maximize
+
+parameters:
+  # ---- Data / fixed args ----
+  data_path:
+    value: ./icbhi_ast_16k_8s_spectrograms.npz
+  checkpoint_dir:
+    value: ./checkpoints
+  results_dir:
+    value: ./results
+  epochs:
+    value: 40
+  batch_size:
+    value: 16
+  num_workers:
+    value: 4
+  amp_dtype:
+    value: bf16
+  min_se:
+    value: 0.0
+  min_sp:
+    value: 0.0
+
+  # ---- Swept hparams ----
+  lr:
+    values: [5.0e-6, 1.0e-5, 2.0e-5, 5.0e-5]
+  looksam_k:
+    values: [1, 5]                   # vanilla SAM vs LookSAM
+  rho:
+    values: [0.05, 0.2]
+  seed:
+    values: [0, 1, 2]
+
+# Each agent invocation becomes:
+#   python scripts/train.py --data_path ... --lr ... --rho ... --seed ...
+# i.e. our existing CLI. No wrapper script needed.
+command:
+  - ${env}
+  - python
+  - ${program}
+  - ${args}

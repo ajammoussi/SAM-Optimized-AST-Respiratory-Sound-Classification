@@ -38,7 +38,9 @@ Usage (local / Colab)
 
 import os
 import argparse
+import json
 import multiprocessing as mp
+import random
 import sys
 import contextlib
 from pathlib import Path
@@ -60,6 +62,22 @@ if str(REPO_ROOT) not in sys.path:
 from src.dataset import ASTDataset
 from src.model import CustomAST
 from src.look_sam import LookSAM
+from src.wandb_logger import WandbLogger
+
+
+def set_seed(seed: int, deterministic: bool = False) -> None:
+    """Seed python / numpy / torch (CPU + CUDA). cuDNN determinism is opt-in
+    because it slows AST attention kernels noticeably."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.benchmark = True
 
 
 def _autocast_ctx(enabled: bool, dtype: torch.dtype):
@@ -312,6 +330,8 @@ def train(args):
     # ------------------------------------------------------------------ #
     # Setup
     # ------------------------------------------------------------------ #
+    set_seed(args.seed, deterministic=args.deterministic)
+
     has_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if has_cuda else "cpu")
 
@@ -327,11 +347,26 @@ def train(args):
     # GradScaler is only required for fp16 autocast.
     scaler_enabled = bool(autocast_enabled and autocast_dtype == torch.float16)
     print(
-        f"Device : {device}  |  autocast : {autocast_enabled} ({amp_mode})  |  GradScaler : {scaler_enabled}"
+        f"Device : {device}  |  autocast : {autocast_enabled} ({amp_mode})  |  GradScaler : {scaler_enabled} | seed : {args.seed}"
     )
 
+    # Per-run output dirs so parallel sweep jobs don't clobber each other.
+    # Priority: explicit --run_name → WANDB_RUN_ID (set by `wandb agent`)
+    #         → config hash (deterministic for a given hparam combo+seed).
+    if not args.run_name:
+        wandb_rid = os.environ.get("WANDB_RUN_ID")
+        if wandb_rid:
+            args.run_name = f"wandb_{wandb_rid}"
+    if args.run_name:
+        args.checkpoint_dir = os.path.join(args.checkpoint_dir, args.run_name)
+        args.results_dir    = os.path.join(args.results_dir,    args.run_name)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     os.makedirs(args.results_dir,    exist_ok=True)
+
+    # Persist resolved config alongside outputs (useful for sweep aggregation).
+    with open(os.path.join(args.results_dir, "config.json"), "w") as f:
+        json.dump({k: (str(v) if not isinstance(v, (int, float, bool, str, list, type(None))) else v)
+                   for k, v in vars(args).items()}, f, indent=2)
 
     # ------------------------------------------------------------------ #
     # Data
@@ -439,6 +474,17 @@ def train(args):
         for _ in range(start_epoch):
             scheduler.step()
         print(f"   Resumed at epoch {start_epoch + 1}  |  Best score so far: {best_score:.4f}")
+
+    # ------------------------------------------------------------------ #
+    # wandb (placeholders — credentials read from env vars / .env)
+    # ------------------------------------------------------------------ #
+    wandb_tags = [t for t in (args.wandb_tags or "").split(",") if t.strip()]
+    wandb_logger = WandbLogger(
+        config=vars(args),
+        run_name=args.run_name,         # None → wandb auto-generates a unique name
+        tags=wandb_tags or None,
+        group=args.wandb_group,
+    )
 
     # ------------------------------------------------------------------ #
     # Training loop
@@ -558,6 +604,20 @@ def train(args):
             f"LR: {current_lr:.2e}"
         )
 
+        wandb_logger.log(
+            {
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "val_loss": avg_val_loss,
+                "sensitivity": se,
+                "specificity": sp,
+                "score": score,
+                "lr": current_lr,
+                "best_score": best_score,
+                "nonfinite_batches": nonfinite_batches,
+            },
+        )
+
         # Balanced save condition — both Se and Sp must be >=55%
         # This prevents saving a model that achieves high Score purely via Se
         # at the cost of Sp collapsing to 19%.
@@ -588,6 +648,20 @@ def train(args):
     print(f"\nTraining complete.  Best ICBHI Score: {best_score*100:.2f}%")
     print(f"   Best model    : {os.path.join(args.checkpoint_dir, 'best_model.pth')}")
     print(f"   Training plots: {os.path.join(args.results_dir, 'training_curves.png')}")
+
+    # Persist final summary so sweep aggregation can read it without unpickling .pt
+    final_summary = {
+        "best_score": best_score,
+        "final_score": history["score"][-1] if history["score"] else 0.0,
+        "final_sensitivity": history["sensitivity"][-1] if history["sensitivity"] else 0.0,
+        "final_specificity": history["specificity"][-1] if history["specificity"] else 0.0,
+        "epochs_run": len(history["score"]),
+    }
+    with open(os.path.join(args.results_dir, "best_metrics.json"), "w") as f:
+        json.dump(final_summary, f, indent=2)
+    Path(os.path.join(args.results_dir, "done")).touch()  # sweep state marker
+
+    wandb_logger.finish(summary=final_summary)
 
 
 # ======================================================================
@@ -631,6 +705,20 @@ if __name__ == "__main__":
         default=10,
         help="Warn after this many non-finite batches in an epoch.",
     )
+
+    # ---- Reproducibility / sweep plumbing ----
+    parser.add_argument("--seed",          type=int, default=0,
+                        help="Seed for python/numpy/torch RNGs")
+    parser.add_argument("--deterministic", action="store_true",
+                        help="Force cuDNN deterministic mode (slower)")
+    parser.add_argument("--run_name",      type=str, default=None,
+                        help="If set, outputs go to {checkpoint_dir,results_dir}/<run_name>/")
+
+    # ---- Wandb plumbing (credentials read from env / .env at runtime) ----
+    parser.add_argument("--wandb_group",   type=str, default=None,
+                        help="wandb group name for organizing sweep runs")
+    parser.add_argument("--wandb_tags",    type=str, default=None,
+                        help="Comma-separated extra tags for the wandb run")
 
     args = parser.parse_args()
     train(args)

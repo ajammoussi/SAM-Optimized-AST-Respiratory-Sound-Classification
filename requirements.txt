@@ -9,3 +9,5 @@ matplotlib
 seaborn
 tqdm
 soundfile
+wandb
+python-dotenv
