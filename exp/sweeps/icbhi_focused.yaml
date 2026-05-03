@@ -62,6 +62,6 @@ parameters:
 # i.e. our existing CLI. No wrapper script needed.
 command:
   - ${env}
-  - python
+  - python3
   - ${program}
   - ${args}
